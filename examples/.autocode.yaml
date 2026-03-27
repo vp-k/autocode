@@ -1,0 +1,80 @@
+# ════════════════════════════════════════════════════════
+# AutoCode Configuration
+# ════════════════════════════════════════════════════════
+# This file defines what to optimize, how to measure, and what's off-limits.
+#
+# Copy this to your project root as .autocode.yaml and customize.
+
+# ─── Target Files ───
+# Files the agent is allowed to modify
+target_files:
+  - src/algorithm.ts
+
+# ─── Hard Gates ───
+# ALL gates must pass; any failure = immediate DISCARD
+# Each gate runs a command and expects exit code 0
+gates:
+  - name: build
+    command: "npm run build"
+    expect: exit_code_0
+    optional: false
+
+  - name: test
+    command: "npm test -- --run"
+    expect: exit_code_0
+    optional: false
+
+  - name: lint
+    command: "npm run lint"
+    expect: exit_code_0
+    optional: true       # lint failure won't discard (soft warning)
+
+  - name: typecheck
+    command: "npx tsc --noEmit"
+    expect: exit_code_0
+    optional: true
+
+# ─── Soft Objectives ───
+# Metrics to optimize. Weighted composite score determines keep/discard.
+# direction: "lower" = lower is better, "higher" = higher is better
+objectives:
+  - name: execution_time_ms
+    command: "npm run bench 2>&1"
+    parse: "([0-9.]+)\\s*ms/op"
+    weight: 0.8
+    direction: lower
+
+  - name: memory_kb
+    command: "node --expose-gc -e \"global.gc(); const m=process.memoryUsage(); console.log(m.heapUsed/1024)\""
+    parse: "([0-9.]+)"
+    weight: 0.2
+    direction: lower
+
+# ─── Readonly Files ───
+# Agent must NEVER modify these files/patterns
+readonly:
+  - "*.test.ts"
+  - "*.spec.ts"
+  - "*.test.js"
+  - "*.spec.js"
+  - "__tests__/**"
+  - "package.json"
+  - "package-lock.json"
+  - "yarn.lock"
+  - "pnpm-lock.yaml"
+  - "tsconfig.json"
+  - ".autocode.yaml"
+  - ".env*"
+  - "migrations/**"
+
+# ─── Changeset Limits ───
+# Safety bounds on how much the agent can change per experiment
+changeset:
+  max_files: 1         # Maximum files modified per experiment
+  max_lines: 100       # Maximum lines changed per experiment
+
+# ─── Experiment Settings ───
+experiment:
+  branch_prefix: "autocode"    # Git branch: autocode/YYYYMMDD-HHMM
+  max_experiments: 100          # Stop after N experiments (0 = unlimited)
+  timeout_per_run: 300          # Seconds per gate+measure cycle

@@ -1,0 +1,15 @@
+# AutoCode runtime files (per-project, not part of the tool)
+.autocode/
+results.tsv
+
+# Review artifacts
+.claude-review-progress.json
+code-review-result.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
