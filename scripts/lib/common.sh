@@ -75,7 +75,8 @@ state_set() {
         quoted_value="\"$(json_escape "$value")\""
     fi
 
-    local tmp="${STATE_FILE}.tmp.$$"
+    local tmp
+    tmp=$(mktemp "${STATE_FILE}.tmp.XXXXXX")
     # Use ENVIRON to pass values safely (avoids awk -v backslash interpretation)
     AUTOCODE_AWK_KEY="\"${key}\"" AUTOCODE_AWK_VAL="${quoted_value}" \
     awk '{

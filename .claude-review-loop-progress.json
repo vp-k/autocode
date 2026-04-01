@@ -3,22 +3,53 @@
   "targetRounds": 10,
   "goal": "CRITICAL/HIGH 0개",
   "goalMet": false,
-  "scope": "scripts/ 디렉토리 전체 (lib/common.sh, gate.sh, experiment.sh, judge.sh, memory.sh, dashboard.sh, setup.sh)",
-  "currentRound": 0,
+  "scope": "scripts/ 디렉토리 전체",
+  "currentRound": 1,
   "status": "in_progress",
-  "roundResults": [],
-  "findingHistory": [],
+  "roundResults": [
+    {
+      "round": 1,
+      "findings": {
+        "total": 15,
+        "confirmed": 5,
+        "dismissed": 10,
+        "dismissedDetails": [
+          { "id": "SEC-CRITICAL-001", "reason": "구조적 한계로 인정됨 (코드 주석에 명시). AI 에이전트 실행 환경의 특성." },
+          { "id": "SEC-HIGH-002", "reason": "001과 동일 맥락. 사용자 자신의 프로젝트에서 실행하는 도구." },
+          { "id": "SEC-MEDIUM-004", "reason": "Claude Code가 순차 실행하므로 동시 접근 불가." },
+          { "id": "ERR-HIGH-005", "reason": "bash :-는 unset OR empty를 모두 처리함. 동작 정상." },
+          { "id": "ERR-MEDIUM-007", "reason": "실험 설명에 제어문자 포함 가능성 극히 낮음." },
+          { "id": "DATA-HIGH-009", "reason": "동점=discard는 의도된 설계." },
+          { "id": "DATA-MEDIUM-010", "reason": "순차 실행 환경이므로 동시 쓰기 불가." },
+          { "id": "DATA-MEDIUM-011", "reason": "state.json은 flat 구조로 설계됨." },
+          { "id": "CODE-HIGH-013", "reason": "grep이 _composite를 정확히 필터링하므로 실제 문제 없음." },
+          { "id": "CODE-LOW-015", "reason": "install.sh에서 scripts/는 bash 명령 컨텍스트에서만 사용." }
+        ],
+        "bySeverity": { "CRITICAL": 0, "HIGH": 1, "MEDIUM": 3, "LOW": 1 }
+      },
+      "fixes": { "attempted": 5, "succeeded": 5, "failed": 0 },
+      "verification": "200 tests passed, 0 failed",
+      "timestamp": "2026-04-01T18:30:00Z"
+    }
+  ],
+  "findingHistory": [
+    { "id": "SEC-MEDIUM-003", "file": "scripts/gate.sh", "line": 246, "description": "changed_files JSON 파일명 이스케이프 누락", "severity": "MEDIUM", "category": "SEC", "discoveredInRound": 1, "status": "fixed", "fixedInRound": 1 },
+    { "id": "ERR-MEDIUM-006", "file": "scripts/gate.sh", "line": 21, "description": ".autocode/가 .gitignore에 자동 추가 안 됨", "severity": "MEDIUM", "category": "ERR", "discoveredInRound": 1, "status": "fixed", "fixedInRound": 1 },
+    { "id": "ERR-MEDIUM-008", "file": "scripts/gate.sh", "line": 141, "description": "cmd_measure metric name 이스케이프 누락", "severity": "MEDIUM", "category": "ERR", "discoveredInRound": 1, "status": "fixed", "fixedInRound": 1 },
+    { "id": "CODE-HIGH-012", "file": "scripts/gate.sh", "line": 311, "description": "check-readonly가 스테이징 아닌 이전 커밋 비교", "severity": "HIGH", "category": "CODE", "discoveredInRound": 1, "status": "fixed", "fixedInRound": 1 },
+    { "id": "CODE-LOW-014", "file": "scripts/dashboard.sh", "line": 408, "description": "중복 rm -f (trap과 수동 삭제)", "severity": "LOW", "category": "CODE", "discoveredInRound": 1, "status": "fixed", "fixedInRound": 1 }
+  ],
   "dod": {
-    "all_rounds_complete": { "checked": false, "evidence": null },
-    "build_pass": { "checked": false, "evidence": null },
-    "no_critical_high": { "checked": false, "evidence": null }
+    "all_rounds_complete": { "checked": false, "evidence": "Round 1/10 완료, goal 미달성" },
+    "build_pass": { "checked": true, "evidence": "200 tests passed, 0 failed" },
+    "no_critical_high": { "checked": true, "evidence": "open CRITICAL: 0, HIGH: 0 (CODE-HIGH-012 fixed)" }
   },
   "handoff": {
-    "lastIteration": null,
-    "completedInThisIteration": "",
-    "nextSteps": "Round 1 시작",
-    "keyDecisions": [],
-    "warnings": "",
-    "currentApproach": ""
+    "lastIteration": 1,
+    "completedInThisIteration": "Round 1: 15건 발견, 5건 확인/수정, 10건 기각. check-readonly staged파일 검사, metric name escape, changed_files escape, .gitignore 자동추가, dashboard rm 중복 제거",
+    "nextSteps": "Round 2: git diff 변경 파일 대상으로 재리뷰. open CRITICAL/HIGH 0개 달성 확인",
+    "keyDecisions": ["blocklist 우회는 구조적 한계로 인정 (defense-in-depth)", "동점=discard는 의도된 설계"],
+    "warnings": "codex 2회 호출 모두 최종 보고서 미출력 — Claude 직접 리뷰로 대체",
+    "currentApproach": "Claude 직접 전관점 리뷰 + 수정 + 테스트 검증"
   }
 }
