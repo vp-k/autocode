@@ -4,49 +4,14 @@
 # Exit: 0=keep, 1=discard
 set -euo pipefail
 
-# ─── Source common library with guard ───
+# ─── Source common library ───
 _COMMON_SH="$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 if [[ -f "$_COMMON_SH" ]]; then
     source "$_COMMON_SH"
 else
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-    CONFIG_FILE=".autocode.yaml"
-    LOG_DIR=".autocode/logs"
-    log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
-    log_ok()    { echo -e "${GREEN}[PASS]${NC} $*"; }
-    log_fail()  { echo -e "${RED}[FAIL]${NC} $*" >&2; }
-    log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+    echo "[FAIL] common.sh not found: $_COMMON_SH" >&2
+    exit 2
 fi
-
-# ─── Fallback for STATE_FILE ───
-STATE_FILE="${STATE_FILE:-.autocode/state.json}"
-
-# ─── State JSON helpers (no jq) ───
-state_get() {
-    local key="$1"
-    [[ ! -f "$STATE_FILE" ]] && { echo ""; return; }
-    grep -o "\"${key}\"[[:space:]]*:[[:space:]]*[^,}]*" "$STATE_FILE" 2>/dev/null \
-        | head -1 \
-        | sed 's/^[^:]*:[[:space:]]*//' \
-        | sed 's/^"//;s/"$//' \
-        | sed 's/[[:space:]]*$//'
-}
-
-state_set() {
-    local key="$1" value="$2" is_number="${3:-}"
-    [[ ! -f "$STATE_FILE" ]] && { log_fail "State file not found: $STATE_FILE"; return 1; }
-
-    local quoted_value
-    if [[ "$is_number" == "--number" ]] || [[ "$value" == "null" ]]; then
-        quoted_value="$value"
-    else
-        quoted_value="\"$value\""
-    fi
-
-    if grep -q "\"${key}\"" "$STATE_FILE" 2>/dev/null; then
-        sed -i "s|\"${key}\"[[:space:]]*:[[:space:]]*[^,}]*|\"${key}\":${quoted_value}|g" "$STATE_FILE"
-    fi
-}
 
 # ─── Main ───
 main() {
@@ -68,7 +33,7 @@ main() {
 
     # 1. Extract _composite.score from --current JSON
     local current_score
-    current_score=$(echo "$current_json" | grep -o '"score"[[:space:]]*:[[:space:]]*[0-9eE.+-]*' | head -1 | sed 's/.*:[[:space:]]*//')
+    current_score=$(echo "$current_json" | grep -o '"score"[[:space:]]*:[[:space:]]*[-0-9eE.+]*' | head -1 | sed 's/.*:[[:space:]]*//')
 
     if [[ -z "$current_score" ]]; then
         log_fail "Could not parse score from --current"
@@ -96,9 +61,12 @@ main() {
     fi
 
     # 4. Compare scores using awk
+    # NOTE: gate.sh already normalizes composite scores by direction
+    #   (direction=lower → negated, so higher composite = better in all cases).
+    #   Therefore, always use current > best here. Do NOT re-apply direction.
     local verdict delta delta_pct
     read -r verdict delta delta_pct < <(
-        awk -v current="$current_score" -v best="$best_score" -v dir="$direction" '
+        awk -v current="$current_score" -v best="$best_score" '
         BEGIN {
             d = current - best
             if (best != 0) {
@@ -107,11 +75,7 @@ main() {
                 dp = (d != 0) ? 100 : 0
             }
 
-            if (dir == "lower") {
-                v = (current < best) ? "keep" : "discard"
-            } else {
-                v = (current > best) ? "keep" : "discard"
-            }
+            v = (current > best) ? "keep" : "discard"
 
             printf "%s %.6f %.4f\n", v, d, dp
         }'

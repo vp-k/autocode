@@ -3,6 +3,13 @@
 ## Use Case
 Docker 이미지 크기를 반복 최적화합니다.
 
+## Setup Instructions
+
+1. Docker가 설치되어 있어야 합니다
+2. 프로젝트에 Dockerfile이 있어야 합니다
+3. 아래 `.autocode.yaml`을 프로젝트 루트에 생성합니다
+4. `/autocode` 실행
+
 ## Example .autocode.yaml
 
 ```yaml
@@ -16,13 +23,7 @@ gates:
     command: "docker build -t autocode-test . --no-cache"
     expect: exit_code_0
   - name: smoke
-    command: |
-      docker run -d --name autocode-smoke -p 3099:3000 autocode-test
-      sleep 5
-      curl -sf http://localhost:3099/health
-      EXIT=$?
-      docker stop autocode-smoke && docker rm autocode-smoke
-      exit $EXIT
+    command: "bash scripts/docker-smoke.sh"
     expect: exit_code_0
 
 objectives:
@@ -46,6 +47,21 @@ readonly:
 changeset:
   max_files: 2
   max_lines: 50
+```
+
+## Important: No Multiline Commands
+
+`.autocode.yaml`의 command 필드는 **한 줄**이어야 합니다. 멀티라인 로직은 별도 스크립트 파일로 분리하세요:
+
+```bash
+# scripts/docker-smoke.sh
+#!/usr/bin/env bash
+docker run -d --name autocode-smoke -p 3099:3000 autocode-test
+sleep 5
+curl -sf http://localhost:3099/health
+EXIT=$?
+docker stop autocode-smoke && docker rm autocode-smoke
+exit $EXIT
 ```
 
 ## Strategy Guide

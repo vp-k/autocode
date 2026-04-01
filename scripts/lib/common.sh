@@ -38,6 +38,82 @@ json_escape() {
     echo -n "$s"
 }
 
+# ─── State JSON helpers (no jq) ───
+STATE_FILE="${STATE_FILE:-.autocode/state.json}"
+
+# Read a top-level string/number value from state.json
+# Usage: state_get "key"
+state_get() {
+    local key="$1"
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo ""
+        return
+    fi
+    local raw
+    raw=$(grep -o "\"${key}\"[[:space:]]*:[[:space:]]*[^,}]*" "$STATE_FILE" 2>/dev/null | head -1) || true
+    if [[ -n "$raw" ]]; then
+        echo "$raw" | sed 's/^[^:]*:[[:space:]]*//' | sed 's/^"//;s/"$//' | sed 's/[[:space:]]*$//'
+    else
+        echo ""
+    fi
+}
+
+# Set a top-level value in state.json
+# Uses awk for safe literal replacement (no sed injection risk)
+# Usage: state_set "key" "value" [--number]
+state_set() {
+    local key="$1" value="$2" is_number="${3:-}"
+    if [[ ! -f "$STATE_FILE" ]]; then
+        log_fail "State file not found: $STATE_FILE"
+        return 1
+    fi
+
+    local quoted_value
+    if [[ "$is_number" == "--number" ]] || [[ "$value" == "null" ]]; then
+        quoted_value="$value"
+    else
+        quoted_value="\"$(json_escape "$value")\""
+    fi
+
+    local tmp="${STATE_FILE}.tmp.$$"
+    # Use ENVIRON to pass values safely (avoids awk -v backslash interpretation)
+    AUTOCODE_AWK_KEY="\"${key}\"" AUTOCODE_AWK_VAL="${quoted_value}" \
+    awk '{
+        qkey = ENVIRON["AUTOCODE_AWK_KEY"]
+        newval = ENVIRON["AUTOCODE_AWK_VAL"]
+        if (index($0, qkey":") > 0 || index($0, qkey" :") > 0) {
+            match($0, qkey"[[:space:]]*:[[:space:]]*")
+            pre = substr($0, 1, RSTART + RLENGTH - 1)
+            rest = substr($0, RSTART + RLENGTH)
+            sub(/^[^,}]*/, "", rest)
+            print pre newval rest
+        } else {
+            print
+        }
+    }' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+# ─── Extract field from a JSONL line (no jq) ───
+jsonl_field() {
+    local line="$1" field="$2"
+    local raw
+    raw=$(echo "$line" | grep -o "\"${field}\"[[:space:]]*:[[:space:]]*[^,}]*" | head -1) || true
+    if [[ -n "$raw" ]]; then
+        echo "$raw" | sed 's/^[^:]*:[[:space:]]*//' | sed 's/^"//;s/"$//'
+    else
+        echo ""
+    fi
+}
+
+# ─── Safe config value extraction (no eval) ───
+# Usage: config_get "config_file" "key" "default"
+config_get() {
+    local config="$1" key="$2" default="${3:-}"
+    local val
+    val=$(parse_yaml "$config" cfg 2>/dev/null | grep "^cfg_${key}=" | head -1 | sed 's/^[^=]*="//' | sed 's/"$//')
+    echo "${val:-$default}"
+}
+
 # ─── YAML Parser (minimal, no external deps) ───
 # Parses simple YAML into shell variables. Handles:
 #   key: value  →  cfg_key="value"
@@ -53,8 +129,13 @@ parse_yaml() {
     fi
 
     # Use a simple awk-based parser for flat and one-level-nested YAML
-    awk -v prefix="$prefix" -v SQ="'" '
-    function clean(s) { sub(/#.*$/, "", s); gsub(/[[:space:]]+$/, "", s); gsub(/^[[:space:]]+/, "", s); gsub(/"/, "", s); gsub(SQ, "", s); return s }
+    awk -v prefix="$prefix" '
+    function clean(s) {
+        sub(/#.*$/, "", s); gsub(/[[:space:]]+$/, "", s); gsub(/^[[:space:]]+/, "", s)
+        if (s ~ /^".*"$/) { s = substr(s, 2, length(s)-2) }
+        else if (s ~ /^'\''.*'\''$/) { s = substr(s, 2, length(s)-2) }
+        return s
+    }
     BEGIN { section = "" }
     /^[[:space:]]*#/ { next }
     /^[[:space:]]*$/ { next }
@@ -78,8 +159,13 @@ parse_yaml() {
 parse_gates() {
     local config_file="${1:-$CONFIG_FILE}"
 
-    awk -v SQ="'" '
-    function clean(s) { sub(/#.*$/, "", s); gsub(/^[[:space:]]+/, "", s); gsub(/[[:space:]]+$/, "", s); gsub(/"/, "", s); gsub(SQ, "", s); return s }
+    awk '
+    function clean(s) {
+        sub(/#.*$/, "", s); gsub(/^[[:space:]]+/, "", s); gsub(/[[:space:]]+$/, "", s)
+        if (s ~ /^".*"$/) { s = substr(s, 2, length(s)-2) }
+        else if (s ~ /^'\''.*'\''$/) { s = substr(s, 2, length(s)-2) }
+        return s
+    }
     /^gates:/ { in_gates=1; next }
     in_gates && /^[a-zA-Z]/ { exit }
     in_gates && /^[[:space:]]*- name:/ {
@@ -107,8 +193,13 @@ parse_gates() {
 parse_objectives() {
     local config_file="${1:-$CONFIG_FILE}"
 
-    awk -v SQ="'" '
-    function clean(s) { sub(/#.*$/, "", s); gsub(/^[[:space:]]+/, "", s); gsub(/[[:space:]]+$/, "", s); gsub(/"/, "", s); gsub(SQ, "", s); return s }
+    awk '
+    function clean(s) {
+        sub(/#.*$/, "", s); gsub(/^[[:space:]]+/, "", s); gsub(/[[:space:]]+$/, "", s)
+        if (s ~ /^".*"$/) { s = substr(s, 2, length(s)-2) }
+        else if (s ~ /^'\''.*'\''$/) { s = substr(s, 2, length(s)-2) }
+        return s
+    }
     /^objectives:/ { in_obj=1; next }
     in_obj && /^[a-zA-Z]/ { exit }
     in_obj && /^[[:space:]]*- name:/ {
@@ -137,8 +228,13 @@ parse_objectives() {
 # ─── Parse readonly patterns from YAML ───
 parse_readonly() {
     local config_file="${1:-$CONFIG_FILE}"
-    awk -v SQ="'" '
-    function clean(s) { sub(/#.*$/, "", s); gsub(/^[[:space:]]+/, "", s); gsub(/[[:space:]]+$/, "", s); gsub(/"/, "", s); gsub(SQ, "", s); return s }
+    awk '
+    function clean(s) {
+        sub(/#.*$/, "", s); gsub(/^[[:space:]]+/, "", s); gsub(/[[:space:]]+$/, "", s)
+        if (s ~ /^".*"$/) { s = substr(s, 2, length(s)-2) }
+        else if (s ~ /^'\''.*'\''$/) { s = substr(s, 2, length(s)-2) }
+        return s
+    }
     /^readonly:/ { in_ro=1; next }
     in_ro && /^[a-zA-Z]/ { exit }
     in_ro && /^[[:space:]]*-/ {
@@ -151,13 +247,18 @@ parse_readonly() {
 # ─── Safe Command Execution ───
 # Runs a command string in a subshell (bash -c) instead of eval.
 # Blocks known dangerous patterns to mitigate command injection from untrusted .autocode.yaml.
-BLOCKED_PATTERNS='(rm[[:space:]]+-rf[[:space:]]+/|curl.*\|[[:space:]]*(ba)?sh|wget.*\|[[:space:]]*(ba)?sh|mkfs|dd[[:space:]]+if=|>[[:space:]]*/dev/sd)'
+# NOTE: Blocklist approach is inherently incomplete — defense-in-depth, not a guarantee.
+BLOCKED_PATTERNS='(rm[[:space:]]+-rf[[:space:]]+/|curl.*\|[[:space:]]*(ba)?sh|wget.*\|[[:space:]]*(ba)?sh|mkfs|dd[[:space:]]+if=|>[[:space:]]*/dev/sd|sudo[[:space:]]|chmod[[:space:]]+777|chmod[[:space:]]+\+s|>[[:space:]]*/etc/|:\(\)\{[[:space:]]*:\|:)'
 
 run_cmd() {
-    local cmd="$1"
+    local cmd="$1" max_time="${2:-300}"
     if [[ "$cmd" =~ $BLOCKED_PATTERNS ]]; then
         log_fail "Blocked dangerous command pattern: $cmd"
         return 126
     fi
-    bash -c "$cmd" 2>&1
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$max_time" bash -c "$cmd" 2>&1
+    else
+        bash -c "$cmd" 2>&1
+    fi
 }

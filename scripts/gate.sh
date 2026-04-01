@@ -20,6 +20,15 @@ cmd_init() {
     mkdir -p "$LOG_DIR"
     mkdir -p .autocode
 
+    # Ensure .autocode/ is in .gitignore
+    if [[ -f .gitignore ]]; then
+        if ! grep -q '^\.autocode/' .gitignore 2>/dev/null; then
+            echo '.autocode/' >> .gitignore
+        fi
+    else
+        echo '.autocode/' > .gitignore
+    fi
+
     # Initialize results.tsv
     if [[ ! -f "$RESULTS_FILE" ]]; then
         echo -e "commit\tmetric_value\tprev_value\tdelta\tstatus\tdescription\ttimestamp" > "$RESULTS_FILE"
@@ -104,7 +113,7 @@ cmd_gates() {
         local key="${pair%%=*}"
         local val="${pair##*=}"
         $first || json_results+=","
-        json_results+="\"$key\":\"$val\""
+        json_results+="\"$(json_escape "$key")\":\"$(json_escape "$val")\""
         first=false
     done
     json_results+="}"
@@ -130,6 +139,9 @@ cmd_measure() {
     while IFS=$'\t' read -r name cmd parse_regex weight direction; do
         [[ -z "$name" || -z "$cmd" ]] && continue
 
+        local safe_name
+        safe_name=$(json_escape "$name")
+
         log_info "Metric [$name]: $cmd"
 
         local output exit_code=0
@@ -138,7 +150,7 @@ cmd_measure() {
         if [[ $exit_code -ne 0 ]]; then
             log_warn "Metric [$name]: command failed (exit code: $exit_code)"
             $first || metrics_json+=","
-            metrics_json+="\"$name\":{\"value\":null,\"error\":\"command_failed\"}"
+            metrics_json+="\"$safe_name\":{\"value\":null,\"error\":\"command_failed\"}"
             first=false
             continue
         fi
@@ -146,20 +158,20 @@ cmd_measure() {
         # Parse metric value
         local value=""
         if [[ -n "$parse_regex" ]]; then
-            value=$(echo "$output" | grep -oP "$parse_regex" | head -1 2>/dev/null || echo "")
+            value=$(echo "$output" | grep -oE "$parse_regex" | head -1 2>/dev/null || echo "")
             # Try to extract the first number from the match
             if [[ -n "$value" ]]; then
-                value=$(echo "$value" | grep -oP '[0-9]+\.?[0-9]*' | head -1 2>/dev/null || echo "$value")
+                value=$(echo "$value" | grep -oE '[0-9]+\.?[0-9]*' | head -1 2>/dev/null || echo "$value")
             fi
         else
             # Try to extract any number from output
-            value=$(echo "$output" | grep -oP '[0-9]+\.?[0-9]*' | tail -1 2>/dev/null || echo "")
+            value=$(echo "$output" | grep -oE '[0-9]+\.?[0-9]*' | tail -1 2>/dev/null || echo "")
         fi
 
         if [[ -z "$value" ]]; then
             log_warn "Metric [$name]: could not parse value from output"
             $first || metrics_json+=","
-            metrics_json+="\"$name\":{\"value\":null,\"error\":\"parse_failed\"}"
+            metrics_json+="\"$safe_name\":{\"value\":null,\"error\":\"parse_failed\"}"
             first=false
             continue
         fi
@@ -177,15 +189,15 @@ cmd_measure() {
         )
 
         $first || metrics_json+=","
-        metrics_json+="\"$name\":{\"value\":$value,\"weight\":$weight,\"direction\":\"$direction\"}"
+        metrics_json+="\"$safe_name\":{\"value\":$value,\"weight\":$weight,\"direction\":\"$direction\"}"
         first=false
 
     done < <(parse_objectives "$config_file")
 
     # Calculate composite score
     local composite=0
-    if (( $(awk "BEGIN {print ($total_weight > 0)}" ) )); then
-        composite=$(awk "BEGIN {printf \"%.6f\", $total_score / $total_weight}")
+    if (( $(awk -v tw="$total_weight" 'BEGIN {print (tw > 0)}' ) )); then
+        composite=$(awk -v ts="$total_score" -v tw="$total_weight" 'BEGIN {printf "%.6f", ts / tw}')
     fi
 
     metrics_json+=",\"_composite\":{\"score\":$composite,\"total_weight\":$total_weight}"
@@ -248,6 +260,9 @@ cmd_log() {
             for(i=1;i<=NF;i++) {
                 if(i>1) printf ","
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", $i)
+                # Escape JSON special characters in filenames
+                gsub(/\\/, "\\\\", $i)
+                gsub(/"/, "\\\"", $i)
                 printf "\"%s\"", $i
             }
             printf "]"
@@ -270,10 +285,21 @@ cmd_log() {
     fi
     safe_metric_name=$(json_escape "$metric_name")
     direction="${direction:-lower}"
+    local safe_direction
+    safe_direction=$(json_escape "$direction")
 
     cat >> "$JSONL_FILE" <<JSONL_EOF
-{"experiment_id":${exp_id},"commit":"${safe_commit}","metric_name":"${safe_metric_name}","metric_value":${value:-null},"prev_value":${prev:-null},"delta":${delta:-0},"delta_pct":${delta_pct},"status":"${status}","description":"${safe_desc}","strategy":"${safe_strategy}","changed_files":${files_json},"changed_lines":${changed_lines},"gate_results":${gate_json},"timestamp":"${ts}","cumulative_improvement_pct":${cumulative_pct},"metric_direction":"${direction}"}
+{"experiment_id":${exp_id},"commit":"${safe_commit}","metric_name":"${safe_metric_name}","metric_value":${value:-null},"prev_value":${prev:-null},"delta":${delta:-0},"delta_pct":${delta_pct},"status":"${status}","description":"${safe_desc}","strategy":"${safe_strategy}","changed_files":${files_json},"changed_lines":${changed_lines},"gate_results":${gate_json},"timestamp":"${ts}","cumulative_improvement_pct":${cumulative_pct},"metric_direction":"${safe_direction}"}
 JSONL_EOF
+
+    # Rotate JSONL if too large (keep last 5000 lines)
+    local line_count
+    line_count=$(wc -l < "$JSONL_FILE" 2>/dev/null | tr -d ' ')
+    if [[ "$line_count" -gt 10000 ]]; then
+        local tmp_rotate="${JSONL_FILE}.rotate.$$"
+        tail -5000 "$JSONL_FILE" > "$tmp_rotate" && mv "$tmp_rotate" "$JSONL_FILE"
+        log_info "Rotated experiment log (kept last 5000 of $line_count entries)"
+    fi
 
     log_ok "Logged experiment #${exp_id}: ${status} (${desc})"
 }
@@ -297,7 +323,11 @@ cmd_check_readonly() {
     local modified_files="${2:-}"
 
     if [[ -z "$modified_files" ]]; then
-        modified_files=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+        # Prefer staged changes (pre-commit check), fallback to last commit diff
+        modified_files=$(git diff --cached --name-only 2>/dev/null || echo "")
+        if [[ -z "$modified_files" ]]; then
+            modified_files=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+        fi
     fi
 
     local violations=""
@@ -305,8 +335,8 @@ cmd_check_readonly() {
         [[ -z "$pattern" ]] && continue
         while read -r file; do
             [[ -z "$file" ]] && continue
-            # Simple glob matching
-            if [[ "$file" == $pattern ]]; then
+            # Glob matching — also try basename if pattern has no /
+            if [[ "$file" == $pattern ]] || { [[ "$pattern" != */* ]] && [[ "$(basename "$file")" == $pattern ]]; }; then
                 violations="${violations}${file} (matches readonly: ${pattern})\n"
             fi
         done <<< "$modified_files"
@@ -339,7 +369,7 @@ cmd_summary() {
 
     local keep_rate=0
     if [[ $total -gt 0 ]]; then
-        keep_rate=$(awk "BEGIN {printf \"%.1f\", $kept / $total * 100}")
+        keep_rate=$(awk -v k="$kept" -v t="$total" 'BEGIN {printf "%.1f", k / t * 100}')
     fi
 
     echo "═══════════════════════════════════════════"
@@ -371,6 +401,66 @@ cmd_summary() {
     fi
 
     echo "═══════════════════════════════════════════"
+}
+
+cmd_validate() {
+    local config_file="${1:-$CONFIG_FILE}"
+    local errors=0
+
+    if [[ ! -f "$config_file" ]]; then
+        log_fail "Config file not found: $config_file"
+        return 2
+    fi
+
+    # Check gates
+    local gate_count=0
+    while IFS=$'\t' read -r name cmd expect optional; do
+        gate_count=$((gate_count + 1))
+        if [[ -z "$cmd" ]]; then
+            log_fail "Gate '$name' has empty command"
+            errors=$((errors + 1))
+        fi
+    done < <(parse_gates "$config_file")
+
+    if [[ "$gate_count" -eq 0 ]]; then
+        log_warn "No gates defined in config"
+    else
+        log_ok "Found $gate_count gate(s)"
+    fi
+
+    # Check objectives
+    local obj_count=0
+    while IFS=$'\t' read -r name cmd preg weight dir; do
+        obj_count=$((obj_count + 1))
+        if [[ -z "$cmd" ]]; then
+            log_fail "Objective '$name' has empty command"
+            errors=$((errors + 1))
+        fi
+        if [[ -z "$preg" ]]; then
+            log_warn "Objective '$name' has no parse regex"
+        fi
+    done < <(parse_objectives "$config_file")
+
+    if [[ "$obj_count" -eq 0 ]]; then
+        log_warn "No objectives defined in config"
+    else
+        log_ok "Found $obj_count objective(s)"
+    fi
+
+    # Check readonly patterns
+    local ro_count=0
+    while read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        ro_count=$((ro_count + 1))
+    done < <(parse_readonly "$config_file")
+    log_info "Found $ro_count readonly pattern(s)"
+
+    if [[ "$errors" -gt 0 ]]; then
+        log_fail "Config validation failed with $errors error(s)"
+        return 1
+    fi
+    log_ok "Config validation passed"
+    return 0
 }
 
 # ─── Main ───
@@ -410,6 +500,9 @@ main() {
         summary)
             cmd_summary "$config"
             ;;
+        validate)
+            cmd_validate "$config"
+            ;;
         help|--help|-h)
             echo "AutoCode Gate Script"
             echo ""
@@ -423,6 +516,7 @@ main() {
             echo "  parse-config   Show parsed configuration"
             echo "  check-readonly Check for readonly file violations"
             echo "  summary        Show experiment summary"
+            echo "  validate       Validate configuration file"
             echo "  help           Show this help"
             ;;
         *)

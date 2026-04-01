@@ -109,22 +109,24 @@ assert_eq "best_score updated to 50.0" "50.0" "$BEST"
 teardown
 
 # ─── Test 2: lower direction + improvement → keep ───
+# NOTE: gate.sh normalizes lower direction by negating scores.
+#   raw 50 → composite -50, raw 40 → composite -40 (higher composite = better)
 echo ""
-echo "--- lower + improvement → keep ---"
+echo "--- lower (normalized) + improvement → keep ---"
 setup
-make_state "50.0" "lower"
+make_state "-50.0" "lower"
 
-assert_exit "lower + better score → exit 0 (keep)" 0 bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":40.0}}'
+assert_exit "lower + better composite (-40 > -50) → exit 0 (keep)" 0 bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":-40.0}}'
 
 teardown
 
 # ─── Test 3: lower direction + worse → discard ───
 echo ""
-echo "--- lower + worse → discard ---"
+echo "--- lower (normalized) + worse → discard ---"
 setup
-make_state "50.0" "lower"
+make_state "-50.0" "lower"
 
-assert_exit "lower + worse score → exit 1 (discard)" 1 bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":60.0}}'
+assert_exit "lower + worse composite (-60 < -50) → exit 1 (discard)" 1 bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":-60.0}}'
 
 teardown
 
@@ -152,9 +154,9 @@ teardown
 echo ""
 echo "--- same score → discard ---"
 setup
-make_state "50.0" "lower"
+make_state "-50.0" "lower"
 
-assert_exit "same score → exit 1 (discard)" 1 bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":50.0}}'
+assert_exit "same score → exit 1 (discard)" 1 bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":-50.0}}'
 
 teardown
 
@@ -162,12 +164,12 @@ teardown
 echo ""
 echo "--- keep updates best_score in state ---"
 setup
-make_state "50.0" "lower"
+make_state "-50.0" "lower"
 
-bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":30.0}}' >/dev/null 2>&1 || true
+bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":-30.0}}' >/dev/null 2>&1 || true
 
 BEST=$(grep -o '"best_score":[^,}]*' "$TEST_DIR/.autocode/state.json" | sed 's/"best_score"://')
-assert_eq "best_score updated to 30.0" "30.0" "$BEST"
+assert_eq "best_score updated to -30.0" "-30.0" "$BEST"
 
 teardown
 
@@ -175,9 +177,9 @@ teardown
 echo ""
 echo "--- keep updates best_commit ---"
 setup
-make_state "50.0" "lower"
+make_state "-50.0" "lower"
 
-bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":30.0}}' >/dev/null 2>&1 || true
+bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":-30.0}}' >/dev/null 2>&1 || true
 
 BEST_COMMIT=$(grep -o '"best_commit":"[^"]*"' "$TEST_DIR/.autocode/state.json" | sed 's/"best_commit":"//;s/"//')
 TOTAL=$((TOTAL + 1))
@@ -195,9 +197,9 @@ teardown
 echo ""
 echo "--- JSON output completeness ---"
 setup
-make_state "50.0" "lower"
+make_state "-50.0" "lower"
 
-OUTPUT=$(bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":40.0}}' 2>/dev/null) || true
+OUTPUT=$(bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":-40.0}}' 2>/dev/null) || true
 
 assert_contains "output has verdict" "$OUTPUT" '"verdict"'
 assert_contains "output has current_score" "$OUTPUT" '"current_score"'
@@ -208,12 +210,68 @@ assert_contains "output has delta_pct" "$OUTPUT" '"delta_pct"'
 teardown
 
 # ─── Test 10: negative scores work ───
+# Normalized: best=-50 (raw 50), current=-40 (raw 40, improvement for lower)
 echo ""
 echo "--- negative scores ---"
 setup
 make_state "-50.0" "lower"
 
-assert_exit "negative score improvement → keep" 0 bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":-60.0}}'
+assert_exit "negative composite improvement (-40 > -50) → keep" 0 bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":-40.0}}'
+
+teardown
+
+# ─── Test 11: best_score=0, no division by zero ───
+echo ""
+echo "--- best_score=0 → no division by zero ---"
+setup
+make_state "0" "higher"
+
+EXIT_CODE=0
+OUTPUT=$(bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":10.0}}' 2>/dev/null) || EXIT_CODE=$?
+
+TOTAL=$((TOTAL + 1))
+# Should not crash; 10 > 0 → keep → exit 0
+if [[ "$EXIT_CODE" -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC} best_score=0 does not crash (exit 0 = keep)"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}FAIL${NC} best_score=0 crashed or unexpected exit ($EXIT_CODE)"
+    FAIL=$((FAIL + 1))
+fi
+
+# Verify delta_pct is 100 (since best=0, improvement from 0 to 10)
+assert_contains "delta_pct is 100 when best_score=0" "$OUTPUT" '"delta_pct":100'
+
+teardown
+
+# ─── Test 12: best_score=0, same score → delta_pct=0 ───
+echo ""
+echo "--- best_score=0, same score → discard ---"
+setup
+make_state "0" "higher"
+
+OUTPUT=$(bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":0}}' 2>/dev/null) || true
+assert_contains "delta_pct is 0 when both scores are 0" "$OUTPUT" '"delta_pct":0'
+
+teardown
+
+# ─── Test 13: Missing --current → exit 2 ───
+echo ""
+echo "--- missing --current → exit 2 ---"
+setup
+make_state "50.0" "lower"
+
+assert_exit "missing --current → exit 2" 2 bash "$JUDGE_SCRIPT"
+
+teardown
+
+# ─── Test 14: Unparseable score in --current → exit 2 ───
+echo ""
+echo "--- unparseable score → exit 2 ---"
+setup
+make_state "50.0" "lower"
+
+assert_exit "unparseable score → exit 2" 2 bash "$JUDGE_SCRIPT" --current '{"_composite":{"score":"not_a_number"}}'
 
 teardown
 

@@ -373,6 +373,258 @@ assert_contains "JSONL has valid metric_direction" "$TEST_DIR/.autocode/logs/exp
 
 teardown
 
+# ─── Test: Validate (valid config) ───
+echo ""
+echo "--- validate: valid config ---"
+TEST_DIR=$(mktemp -d)
+setup
+
+cat > "$TEST_DIR/.autocode.yaml" <<'YAML'
+gates:
+  - name: build
+    command: "echo ok"
+    expect: exit_code_0
+    optional: false
+
+objectives:
+  - name: speed
+    command: "echo 100"
+    parse: "([0-9]+)"
+    weight: 1.0
+    direction: lower
+YAML
+
+assert_exit "validate valid config → exit 0" 0 bash "$GATE_SCRIPT" validate --config "$TEST_DIR/.autocode.yaml"
+
+teardown
+
+# ─── Test: Validate (empty gate command → skipped by parser, no gates found) ───
+echo ""
+echo "--- validate: empty gate command ---"
+TEST_DIR=$(mktemp -d)
+setup
+
+cat > "$TEST_DIR/.autocode.yaml" <<'YAML'
+gates:
+  - name: bad_gate
+    command: ""
+    expect: exit_code_0
+    optional: false
+YAML
+
+# Parser filters out gates with empty commands, so validate sees 0 gates (warning, not error)
+# Validate should still exit 0 since no gates is a warning, not a failure
+assert_exit "validate empty gate command (filtered by parser) → exit 0" 0 bash "$GATE_SCRIPT" validate --config "$TEST_DIR/.autocode.yaml"
+
+# Also test with a config that has ONLY empty objectives command (same parser behavior)
+cat > "$TEST_DIR/.autocode.yaml" <<'YAML'
+gates:
+  - name: good_gate
+    command: "echo ok"
+    expect: exit_code_0
+    optional: false
+
+objectives:
+  - name: bad_obj
+    command: ""
+    parse: "([0-9]+)"
+    weight: 1.0
+    direction: lower
+YAML
+
+# Objective with empty command is also filtered by parser → 0 objectives (warning only)
+assert_exit "validate empty objective command (filtered) → exit 0" 0 bash "$GATE_SCRIPT" validate --config "$TEST_DIR/.autocode.yaml"
+
+teardown
+
+# ─── Test: Validate (no gates, warning only) ───
+echo ""
+echo "--- validate: no gates ---"
+TEST_DIR=$(mktemp -d)
+setup
+
+cat > "$TEST_DIR/.autocode.yaml" <<'YAML'
+objectives:
+  - name: speed
+    command: "echo 100"
+    parse: "([0-9]+)"
+    weight: 1.0
+    direction: lower
+YAML
+
+assert_exit "validate no gates → exit 0 (warning)" 0 bash "$GATE_SCRIPT" validate --config "$TEST_DIR/.autocode.yaml"
+
+teardown
+
+# ─── Test: Validate (missing config) ───
+echo ""
+echo "--- validate: missing config ---"
+TEST_DIR=$(mktemp -d)
+setup
+
+assert_exit "validate missing config → exit 2" 2 bash "$GATE_SCRIPT" validate --config "$TEST_DIR/nonexistent.yaml"
+
+teardown
+
+# ─── Test: JSONL rotation ───
+echo ""
+echo "--- JSONL rotation ---"
+TEST_DIR=$(mktemp -d)
+setup
+bash "$GATE_SCRIPT" init --config "$PROJECT_DIR/examples/.autocode.yaml" >/dev/null 2>&1
+
+cat > "$TEST_DIR/.autocode.yaml" <<'YAML'
+objectives:
+  - name: rot_metric
+    command: "echo 1"
+    parse: "([0-9]+)"
+    weight: 1.0
+    direction: lower
+YAML
+
+# Write >10000 lines to JSONL
+for i in $(seq 1 10050); do
+    echo '{"experiment_id":0,"commit":"fake","metric_name":"rot_metric","metric_value":1,"prev_value":0,"delta":1,"delta_pct":0,"status":"keep","description":"filler","strategy":"none","changed_files":[],"changed_lines":0,"gate_results":{},"timestamp":"2025-01-01T00:00:00Z","cumulative_improvement_pct":0,"metric_direction":"lower"}' >> "$TEST_DIR/.autocode/logs/experiments.jsonl"
+done
+
+# Call cmd_log which triggers rotation
+bash "$GATE_SCRIPT" log --config "$TEST_DIR/.autocode.yaml" \
+    --commit "rot1234" --value "1" --prev "0" --delta "1" \
+    --status "keep" --description "rotation trigger" \
+    --strategy "none" --experiment-id "99" \
+    >/dev/null 2>&1
+
+LINE_COUNT=$(wc -l < "$TEST_DIR/.autocode/logs/experiments.jsonl" | tr -d ' ')
+TOTAL=$((TOTAL + 1))
+if [[ "$LINE_COUNT" -le 5100 && "$LINE_COUNT" -ge 4900 ]]; then
+    echo -e "${GREEN}PASS${NC} JSONL rotation trimmed to ~5001 lines (got $LINE_COUNT)"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}FAIL${NC} JSONL rotation: expected ~5001 lines, got $LINE_COUNT"
+    FAIL=$((FAIL + 1))
+fi
+
+teardown
+
+# ─── Test: Measure multi-objective weighted average ───
+echo ""
+echo "--- measure: multi-objective weighted average ---"
+TEST_DIR=$(mktemp -d)
+setup
+
+cat > "$TEST_DIR/.autocode.yaml" <<'YAML'
+objectives:
+  - name: metric_a
+    command: "echo 100"
+    parse: "[0-9]+"
+    weight: 0.7
+    direction: lower
+  - name: metric_b
+    command: "echo 50"
+    parse: "[0-9]+"
+    weight: 0.3
+    direction: higher
+YAML
+
+OUTPUT=$(bash "$GATE_SCRIPT" measure --config "$TEST_DIR/.autocode.yaml" 2>/dev/null)
+# metric_a: lower → -100, weight 0.7, contribution = -70
+# metric_b: higher → 50, weight 0.3, contribution = 15
+# composite = (-70 + 15) / (0.7 + 0.3) = -55
+TOTAL=$((TOTAL + 1))
+if echo "$OUTPUT" | grep -q '"_composite"'; then
+    COMPOSITE=$(echo "$OUTPUT" | grep -o '"score":[^,}]*' | tail -1 | sed 's/"score"://')
+    # Check that composite is approximately -55
+    IS_CORRECT=$(awk -v c="$COMPOSITE" 'BEGIN { print (c < -54 && c > -56) ? "yes" : "no" }')
+    if [[ "$IS_CORRECT" == "yes" ]]; then
+        echo -e "${GREEN}PASS${NC} multi-objective weighted average is correct ($COMPOSITE ≈ -55)"
+        PASS=$((PASS + 1))
+    else
+        echo -e "${RED}FAIL${NC} multi-objective weighted average: expected ≈-55, got $COMPOSITE"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo -e "${RED}FAIL${NC} multi-objective: no _composite in output"
+    FAIL=$((FAIL + 1))
+fi
+
+teardown
+
+# ─── Test: Measure with failing objective command ───
+echo ""
+echo "--- measure: failing objective command ---"
+TEST_DIR=$(mktemp -d)
+setup
+
+cat > "$TEST_DIR/.autocode.yaml" <<'YAML'
+objectives:
+  - name: failing_metric
+    command: "exit 1"
+    parse: "([0-9]+)"
+    weight: 1.0
+    direction: lower
+YAML
+
+OUTPUT=$(bash "$GATE_SCRIPT" measure --config "$TEST_DIR/.autocode.yaml" 2>/dev/null)
+TOTAL=$((TOTAL + 1))
+if echo "$OUTPUT" | grep -q '"error":"command_failed"'; then
+    echo -e "${GREEN}PASS${NC} measure handles failing objective gracefully"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}FAIL${NC} measure failing objective: expected error field (got: $OUTPUT)"
+    FAIL=$((FAIL + 1))
+fi
+
+teardown
+
+# ─── Test: check-readonly basename matching ───
+echo ""
+echo "--- check-readonly: basename matching ---"
+TEST_DIR=$(mktemp -d)
+setup
+
+cat > "$TEST_DIR/.autocode.yaml" <<'YAML'
+readonly:
+  - "*.test.ts"
+YAML
+
+# Create nested test file and commit
+mkdir -p "$TEST_DIR/src/utils"
+echo 'test' > "$TEST_DIR/src/utils/foo.test.ts"
+echo 'code' > "$TEST_DIR/src/utils/bar.ts"
+git -C "$TEST_DIR" add -A && git -C "$TEST_DIR" commit -q -m "add files"
+
+# Modify the test file
+echo 'modified' > "$TEST_DIR/src/utils/foo.test.ts"
+git -C "$TEST_DIR" add -A && git -C "$TEST_DIR" commit -q -m "modify test file"
+
+assert_exit "basename pattern *.test.ts matches src/utils/foo.test.ts" 1 bash "$GATE_SCRIPT" check-readonly --config "$TEST_DIR/.autocode.yaml"
+
+teardown
+
+# ─── Test: check-readonly pattern with / should NOT use basename fallback ───
+echo ""
+echo "--- check-readonly: pattern with / no basename fallback ---"
+TEST_DIR=$(mktemp -d)
+setup
+
+cat > "$TEST_DIR/.autocode.yaml" <<'YAML'
+readonly:
+  - "src/*.ts"
+YAML
+
+# Create a deeply nested ts file (not directly under src/)
+mkdir -p "$TEST_DIR/lib"
+echo 'code' > "$TEST_DIR/lib/deep.ts"
+git -C "$TEST_DIR" add -A && git -C "$TEST_DIR" commit -q -m "add files"
+
+# Modify the file
+echo 'modified' > "$TEST_DIR/lib/deep.ts"
+git -C "$TEST_DIR" add -A && git -C "$TEST_DIR" commit -q -m "modify deep file"
+
+assert_exit "pattern src/*.ts should NOT match lib/deep.ts" 0 bash "$GATE_SCRIPT" check-readonly --config "$TEST_DIR/.autocode.yaml"
+
+teardown
+
 # ─── Test: Help ───
 echo ""
 echo "--- help ---"

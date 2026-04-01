@@ -309,8 +309,8 @@ bash "$EXPERIMENT_SCRIPT" start --config "$TEST_DIR/.autocode.yaml" >/dev/null 2
 
 CURRENT_BRANCH=$(git branch --show-current)
 TOTAL=$((TOTAL + 1))
-if [[ "$CURRENT_BRANCH" =~ ^autocode/[0-9]{8}-[0-9]{4}$ ]]; then
-    echo -e "${GREEN}PASS${NC} auto-generated tag matches YYYYMMDD-HHMM"
+if [[ "$CURRENT_BRANCH" =~ ^autocode/[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$ ]]; then
+    echo -e "${GREEN}PASS${NC} auto-generated tag matches YYYYMMDD-HHMMSS-XXXX"
     PASS=$((PASS + 1))
 else
     echo -e "${RED}FAIL${NC} auto-generated tag format wrong (got: $CURRENT_BRANCH)"
@@ -335,6 +335,57 @@ if echo "$COMMIT_OUTPUT" | grep -qE '[0-9a-f]{7}'; then
     PASS=$((PASS + 1))
 else
     echo -e "${RED}FAIL${NC} commit did not output hash (got: $COMMIT_OUTPUT)"
+    FAIL=$((FAIL + 1))
+fi
+
+teardown
+
+# ─── Test 13: commit changeset max_files limit ───
+echo ""
+echo "--- commit: changeset max_files limit ---"
+setup
+
+# Override config with max_files: 1
+cat > "$TEST_DIR/.autocode.yaml" <<'YAML'
+objectives:
+  - name: test_metric
+    command: "echo 'score: 42.5'"
+    parse: "([0-9.]+)"
+    weight: 1.0
+    direction: lower
+
+gates:
+  - name: check
+    command: "echo ok"
+    expect: exit_code_0
+    optional: false
+
+changeset:
+  max_files: 1
+  max_lines: 200
+
+readonly:
+  - "*.lock"
+YAML
+
+git add -A && git commit -q -m "update config"
+
+bash "$EXPERIMENT_SCRIPT" start --config "$TEST_DIR/.autocode.yaml" --tag "test013" >/dev/null 2>&1
+
+# Create 2 new files (exceeds max_files: 1)
+echo "file1 content" > "$TEST_DIR/new_file1.txt"
+echo "file2 content" > "$TEST_DIR/new_file2.txt"
+
+assert_exit "commit fails with too many files" 1 bash "$EXPERIMENT_SCRIPT" commit --config "$TEST_DIR/.autocode.yaml" --message "too many files"
+
+# Verify error message mentions "Changeset too large"
+OUTPUT=$(bash "$EXPERIMENT_SCRIPT" commit --config "$TEST_DIR/.autocode.yaml" --message "too many files" 2>&1 || true)
+TOTAL=$((TOTAL + 1))
+if echo "$OUTPUT" | grep -q "Changeset too large"; then
+    echo -e "${GREEN}PASS${NC} error message contains 'Changeset too large'"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}FAIL${NC} error message missing 'Changeset too large' (got: $OUTPUT)"
     FAIL=$((FAIL + 1))
 fi
 

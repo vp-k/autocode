@@ -31,6 +31,7 @@ fi
 
 # Use secure temp file instead of predictable /tmp path
 TEMP_DATA=$(mktemp "${TMPDIR:-/tmp}/autocode-data.XXXXXX.json")
+trap 'rm -f "$TEMP_DATA"' EXIT
 
 # Detect Python command (python3 or python)
 PYTHON_CMD=""
@@ -239,7 +240,7 @@ tr:hover { background: var(--surface2); }
 <div class="stats" id="stats"></div>
 
 <div class="chart-container">
-    <div class="chart-title">Metric Trend</div>
+    <div class="chart-title">Metric Trend <span id="chart-direction" style="color: var(--text-dim); font-size: 0.85em;"></span></div>
     <canvas id="chart" height="300"></canvas>
 </div>
 
@@ -279,13 +280,14 @@ function esc(s) {
 // Render stats
 function renderStats() {
     const s = document.getElementById('stats');
+    const dirLabel = DATA.direction === 'higher' ? '(higher is better)' : '(lower is better)';
     const cards = [
         { label: 'Total', value: DATA.total, cls: 'blue' },
         { label: 'Kept', value: DATA.kept, cls: 'green' },
         { label: 'Discarded', value: DATA.discarded, cls: 'red' },
         { label: 'Crashed', value: DATA.crashed, cls: 'yellow' },
         { label: 'Keep Rate', value: DATA.keep_rate + '%', cls: 'purple' },
-        { label: 'Best ' + DATA.metric_name, value: DATA.best_value ?? 'N/A', cls: 'green' },
+        { label: 'Best ' + DATA.metric_name + ' ' + dirLabel, value: DATA.best_value ?? 'N/A', cls: 'green' },
     ];
     s.innerHTML = cards.map(c => `
         <div class="stat-card">
@@ -391,6 +393,8 @@ function renderTable() {
     ).join('');
 }
 
+document.getElementById('chart-direction').textContent =
+    DATA.direction === 'higher' ? '(higher is better)' : '(lower is better)';
 renderStats();
 renderChart();
 renderTable();
@@ -400,8 +404,7 @@ window.addEventListener('resize', renderChart);
 </html>
 HTML_SCRIPT
 
-# Cleanup
-rm -f "$TEMP_DATA"
+# Cleanup handled by EXIT trap (line 34)
 
 echo "Dashboard generated: $OUTPUT_FILE"
 echo "Open in browser: file://$OUTPUT_FILE"

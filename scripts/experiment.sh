@@ -12,91 +12,11 @@ _COMMON_SH="$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 if [[ -f "$_COMMON_SH" ]]; then
     source "$_COMMON_SH"
 else
-    # Fallback definitions when common.sh is not yet available
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-    CONFIG_FILE=".autocode.yaml"
-    LOG_DIR=".autocode/logs"
-    RESULTS_FILE="results.tsv"
-    JSONL_FILE="${LOG_DIR}/experiments.jsonl"
-    MEMORY_FILE=".autocode/memory.md"
-    log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
-    log_ok()    { echo -e "${GREEN}[PASS]${NC} $*"; }
-    log_fail()  { echo -e "${RED}[FAIL]${NC} $*" >&2; }
-    log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-    now_iso()   { date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S"; }
-    json_escape() {
-        local s="$1"
-        s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
-        echo -n "$s"
-    }
-    parse_yaml() {
-        local yaml_file="$1" prefix="${2:-cfg}"
-        [[ ! -f "$yaml_file" ]] && { log_fail "Config file not found: $yaml_file"; exit 2; }
-        awk -v prefix="$prefix" -v SQ="'" '
-        function clean(s) { sub(/#.*$/, "", s); gsub(/[[:space:]]+$/, "", s); gsub(/^[[:space:]]+/, "", s); gsub(/"/, "", s); gsub(SQ, "", s); return s }
-        BEGIN { section = "" }
-        /^[[:space:]]*#/ { next }
-        /^[[:space:]]*$/ { next }
-        /^[a-zA-Z_][a-zA-Z0-9_]*:/ {
-            key = $0; sub(/:.*/, "", key); gsub(/[[:space:]]/, "", key)
-            val = $0; sub(/^[^:]*:[[:space:]]*/, "", val); val = clean(val)
-            if (val == "" || val ~ /^[|>]/) { section = key; next }
-            printf "%s_%s=\"%s\"\n", prefix, key, val
-            section = ""
-        }
-        /^[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*:/ && section != "" {
-            key = $0; sub(/:.*/, "", key); gsub(/[[:space:]]/, "", key)
-            val = $0; sub(/^[^:]*:[[:space:]]*/, "", val); val = clean(val)
-            printf "%s_%s_%s=\"%s\"\n", prefix, section, key, val
-        }
-        ' "$yaml_file"
-    }
+    echo "[FAIL] common.sh not found: $_COMMON_SH" >&2
+    exit 2
 fi
 
-# ─── Fallback for STATE_FILE ───
-STATE_FILE="${STATE_FILE:-.autocode/state.json}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# ─── State JSON helpers (no jq) ───
-
-# Read a top-level string/number value from state.json
-# Usage: state_get "key"
-state_get() {
-    local key="$1"
-    if [[ ! -f "$STATE_FILE" ]]; then
-        echo ""
-        return
-    fi
-    # Extract value for "key":value or "key":"value"
-    grep -o "\"${key}\"[[:space:]]*:[[:space:]]*[^,}]*" "$STATE_FILE" 2>/dev/null \
-        | head -1 \
-        | sed 's/^[^:]*:[[:space:]]*//' \
-        | sed 's/^"//;s/"$//' \
-        | sed 's/[[:space:]]*$//'
-}
-
-# Set a top-level value in state.json
-# Usage: state_set "key" "value" [--number]
-state_set() {
-    local key="$1" value="$2" is_number="${3:-}"
-    if [[ ! -f "$STATE_FILE" ]]; then
-        log_fail "State file not found: $STATE_FILE"
-        return 1
-    fi
-
-    local quoted_value
-    if [[ "$is_number" == "--number" ]] || [[ "$value" == "null" ]]; then
-        quoted_value="$value"
-    else
-        quoted_value="\"$value\""
-    fi
-
-    # Use sed to replace the value in-place
-    if grep -q "\"${key}\"" "$STATE_FILE" 2>/dev/null; then
-        sed -i "s|\"${key}\"[[:space:]]*:[[:space:]]*[^,}]*|\"${key}\":${quoted_value}|g" "$STATE_FILE"
-    fi
-}
 
 # ─── Commands ───
 
@@ -124,7 +44,7 @@ cmd_start() {
 
     # 2. Generate tag
     if [[ -z "$tag" ]]; then
-        tag=$(date +%Y%m%d-%H%M)
+        tag="$(date +%Y%m%d-%H%M%S)-$(head -c 2 /dev/urandom | xxd -p 2>/dev/null || printf '%04x' $RANDOM)"
     fi
     local branch="autocode/$tag"
 
@@ -137,15 +57,20 @@ cmd_start() {
 
     # 5. Create state.json
     mkdir -p "$(dirname "$STATE_FILE")"
+    local escaped_branch
+    escaped_branch=$(json_escape "$branch")
     cat > "$STATE_FILE" <<EOF
-{"branch":"${branch}","experiment_id":0,"baseline_score":null,"best_score":null,"best_commit":null,"direction":"lower"}
+{"branch":"${escaped_branch}","experiment_id":0,"baseline_score":null,"best_score":null,"best_commit":null,"direction":"lower"}
 EOF
     log_ok "Created $STATE_FILE"
 
     # 6. Measure baseline
     log_info "Measuring baseline..."
     local measure_output
-    measure_output=$(bash "${SCRIPT_DIR}/gate.sh" measure --config "$config" 2>/dev/null) || true
+    measure_output=$(bash "${SCRIPT_DIR}/gate.sh" measure --config "$config" 2>&1) || {
+        log_warn "Baseline measurement failed (exit $?)"
+        measure_output=""
+    }
 
     # Extract _composite.score from measure output
     local baseline_score
@@ -158,8 +83,13 @@ EOF
         # Detect direction from config
         local direction="lower"
         local first_obj
-        first_obj=$(awk -v SQ="'" '
-        function clean(s) { sub(/#.*$/, "", s); gsub(/^[[:space:]]+/, "", s); gsub(/[[:space:]]+$/, "", s); gsub(/"/, "", s); gsub(SQ, "", s); return s }
+        first_obj=$(awk '
+        function clean(s) {
+            sub(/#.*$/, "", s); gsub(/^[[:space:]]+/, "", s); gsub(/[[:space:]]+$/, "", s)
+            if (s ~ /^".*"$/) { s = substr(s, 2, length(s)-2) }
+            else if (s ~ /^'\''.*'\''$/) { s = substr(s, 2, length(s)-2) }
+            return s
+        }
         /^objectives:/ { in_obj=1; next }
         in_obj && /^[a-zA-Z]/ { exit }
         in_obj && /^[[:space:]]*direction:/ {
@@ -204,11 +134,10 @@ cmd_commit() {
     exp_id="${exp_id:-0}"
     exp_id=$((exp_id + 1))
 
-    # 3. Changeset validation
+    # 3. Changeset validation (safe extraction, no eval)
     local max_files max_lines
-    eval "$(parse_yaml "$config" cfg)" 2>/dev/null || true
-    max_files="${cfg_changeset_max_files:-999}"
-    max_lines="${cfg_changeset_max_lines:-9999}"
+    max_files=$(config_get "$config" "changeset_max_files" "999")
+    max_lines=$(config_get "$config" "changeset_max_lines" "9999")
 
     # Stage if nothing staged
     local staged
@@ -219,7 +148,7 @@ cmd_commit() {
 
     # Parse file count and line count from staged changes
     local stat_output file_count line_count
-    stat_output=$(git diff --cached --stat 2>/dev/null) || true
+    stat_output=$(git diff --cached --stat 2>/dev/null) || stat_output=""
 
     # File count: count lines that are file entries (have |)
     file_count=$(echo "$stat_output" | grep '|' | wc -l | tr -d ' ')
@@ -254,6 +183,20 @@ cmd_commit() {
 }
 
 cmd_discard() {
+    # Verify we are on an autocode branch
+    local current_branch
+    current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if [[ "$current_branch" != autocode/* ]]; then
+        log_fail "Not on an autocode branch (current: $current_branch). Refusing to discard."
+        exit 1
+    fi
+
+    # Verify HEAD~1 exists
+    if ! git rev-parse HEAD~1 >/dev/null 2>&1; then
+        log_fail "No parent commit to reset to"
+        exit 1
+    fi
+
     git reset --hard HEAD~1
     log_ok "Discarded experiment"
 }

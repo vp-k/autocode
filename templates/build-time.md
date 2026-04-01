@@ -3,6 +3,12 @@
 ## Use Case
 프로젝트 빌드/컴파일 시간을 반복 최적화합니다.
 
+## Setup Instructions
+
+1. 프로젝트에 빌드 스크립트(`npm run build`)가 설정되어 있어야 합니다
+2. 아래 `.autocode.yaml`을 프로젝트 루트에 생성합니다
+3. `/autocode` 실행
+
 ## Example .autocode.yaml
 
 ```yaml

@@ -128,6 +128,64 @@ else
     PASS=$((PASS + 1))
 fi
 
+# ─── Test: parse_yaml quoted values ───
+echo ""
+echo "--- parse_yaml quoted values ---"
+
+COMMON_SCRIPT="$PROJECT_DIR/scripts/lib/common.sh"
+
+# Double-quoted value: outer quotes should be removed
+TMPFILE=$(mktemp --suffix=.yaml)
+cat > "$TMPFILE" <<'YAML'
+mykey: "hello world"
+YAML
+
+OUTPUT=$(bash -c "source '$COMMON_SCRIPT' && parse_yaml '$TMPFILE' cfg")
+TOTAL=$((TOTAL + 1))
+if echo "$OUTPUT" | grep -q 'cfg_mykey="hello world"'; then
+    echo -e "${GREEN}PASS${NC} parse_yaml: double-quoted value strips outer quotes"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}FAIL${NC} parse_yaml: double-quoted value (got: $OUTPUT)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$TMPFILE"
+
+# Single-quoted value: outer quotes should be removed
+TMPFILE=$(mktemp --suffix=.yaml)
+cat > "$TMPFILE" <<'YAML'
+mykey: 'single quoted'
+YAML
+
+OUTPUT=$(bash -c "source '$COMMON_SCRIPT' && parse_yaml '$TMPFILE' cfg")
+TOTAL=$((TOTAL + 1))
+if echo "$OUTPUT" | grep -q 'cfg_mykey="single quoted"'; then
+    echo -e "${GREEN}PASS${NC} parse_yaml: single-quoted value strips outer quotes"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}FAIL${NC} parse_yaml: single-quoted value (got: $OUTPUT)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$TMPFILE"
+
+# Unquoted value with inner quotes: should preserve inner quotes
+TMPFILE=$(mktemp --suffix=.yaml)
+cat > "$TMPFILE" <<'YAML'
+mykey: He said "hello"
+YAML
+
+OUTPUT=$(bash -c "source '$COMMON_SCRIPT' && parse_yaml '$TMPFILE' cfg")
+TOTAL=$((TOTAL + 1))
+# The inner quotes should be preserved — the value is NOT wrapped in matching outer quotes
+if echo "$OUTPUT" | grep -q 'He said "hello"'; then
+    echo -e "${GREEN}PASS${NC} parse_yaml: inner quotes preserved in unquoted value"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}FAIL${NC} parse_yaml: inner quotes not preserved (got: $OUTPUT)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$TMPFILE"
+
 # ═══════════════════════════════════════════
 echo ""
 echo "═══════════════════════════════════════════"

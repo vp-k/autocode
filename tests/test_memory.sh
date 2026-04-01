@@ -226,6 +226,75 @@ assert_contains "What Failed shows gate_fail status" "$TEST_DIR/.autocode/memory
 
 teardown
 
+# ─── Test 9: Manual Notes preservation ───
+echo ""
+echo "--- manual notes preservation ---"
+setup
+make_state "42.0" "abc1234"
+add_experiment "keep" "Some optimization" "algorithmic" "-10.0"
+
+# Pre-create memory.md with a Manual Notes section
+cat > "$TEST_DIR/.autocode/memory.md" <<'MD'
+## Experiment Memory
+
+### What Worked
+(old content)
+
+### Manual Notes
+This is my custom note.
+Do not delete this.
+MD
+
+bash "$MEMORY_SCRIPT" update --config "$TEST_DIR/.autocode.yaml" >/dev/null 2>&1
+
+assert_contains "Manual Notes section preserved" "$TEST_DIR/.autocode/memory.md" "### Manual Notes"
+assert_contains "Manual Notes content preserved" "$TEST_DIR/.autocode/memory.md" "This is my custom note."
+assert_contains "Manual Notes multi-line preserved" "$TEST_DIR/.autocode/memory.md" "Do not delete this."
+
+teardown
+
+# ─── Test 10: Empty description → (no description) ───
+echo ""
+echo "--- empty description fallback ---"
+setup
+make_state "42.0" "abc1234"
+
+# Add entry with empty description
+echo '{"experiment_id":1,"commit":"abc123","metric_name":"test_metric","metric_value":42,"prev_value":50,"delta":-8,"delta_pct":-15,"status":"keep","description":"","strategy":"algorithmic","changed_files":[],"changed_lines":5,"gate_results":{},"timestamp":"2025-01-01T00:00:00Z","cumulative_improvement_pct":0,"metric_direction":"lower"}' >> "$TEST_DIR/.autocode/logs/experiments.jsonl"
+
+bash "$MEMORY_SCRIPT" update --config "$TEST_DIR/.autocode.yaml" >/dev/null 2>&1
+
+assert_contains "empty description shows fallback" "$TEST_DIR/.autocode/memory.md" "(no description)"
+
+teardown
+
+# ─── Test 11: No JSONL file → valid memory.md ───
+echo ""
+echo "--- no JSONL file ---"
+setup
+make_state "42.0" "abc1234"
+
+# Ensure no JSONL file exists
+rm -f "$TEST_DIR/.autocode/logs/experiments.jsonl"
+
+bash "$MEMORY_SCRIPT" update --config "$TEST_DIR/.autocode.yaml" >/dev/null 2>&1
+EXIT_CODE=$?
+
+TOTAL=$((TOTAL + 1))
+if [[ "$EXIT_CODE" -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC} no JSONL: exits 0"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}FAIL${NC} no JSONL: expected exit 0, got $EXIT_CODE"
+    FAIL=$((FAIL + 1))
+fi
+
+assert_file_exists "no JSONL: memory.md created" "$TEST_DIR/.autocode/memory.md"
+assert_contains "no JSONL: has What Worked section" "$TEST_DIR/.autocode/memory.md" "What Worked"
+assert_contains "no JSONL: has What Failed section" "$TEST_DIR/.autocode/memory.md" "What Failed"
+
+teardown
+
 # ═══════════════════════════════════════════
 echo ""
 echo "═══════════════════════════════════════════"

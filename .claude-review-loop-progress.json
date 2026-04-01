@@ -1,0 +1,24 @@
+{
+  "mode": "goal",
+  "targetRounds": 10,
+  "goal": "CRITICAL/HIGH 0개",
+  "goalMet": false,
+  "scope": "scripts/ 디렉토리 전체 (lib/common.sh, gate.sh, experiment.sh, judge.sh, memory.sh, dashboard.sh, setup.sh)",
+  "currentRound": 0,
+  "status": "in_progress",
+  "roundResults": [],
+  "findingHistory": [],
+  "dod": {
+    "all_rounds_complete": { "checked": false, "evidence": null },
+    "build_pass": { "checked": false, "evidence": null },
+    "no_critical_high": { "checked": false, "evidence": null }
+  },
+  "handoff": {
+    "lastIteration": null,
+    "completedInThisIteration": "",
+    "nextSteps": "Round 1 시작",
+    "keyDecisions": [],
+    "warnings": "",
+    "currentApproach": ""
+  }
+}
