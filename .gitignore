@@ -3,7 +3,9 @@
 results.tsv
 
 # Review artifacts
-.claude-review-progress.json
+.claude-review-*.json
+.claude-verification.json
+.claude-review-suppressions.json
 code-review-result.md
 
 # OS
