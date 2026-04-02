@@ -121,6 +121,34 @@ changeset:
   max_lines: 100
 ```
 
+## When to Use (and When Not To)
+
+AutoCode optimizes **quantifiable metrics through autonomous iteration**. It works best when there is a single, measurable number that defines "better."
+
+### Works Well
+
+| Scenario | Why |
+|----------|-----|
+| **Performance optimization** (latency, throughput) | Clear numeric target, every change measurable |
+| **Size reduction** (bundle, Docker image, binary) | Single metric, deterministic measurement |
+| **Build time optimization** | Measurable in milliseconds, reproducible |
+| **Test coverage increase** | Percentage goes up or down, no ambiguity |
+| **Resource usage reduction** (memory, CPU) | Profiler gives exact numbers |
+
+Common pattern: **one metric + hard gates (build/test must pass) = effective autonomous loop.**
+
+### Does Not Work Well
+
+| Scenario | Why |
+|----------|-----|
+| **Refactoring / architecture improvement** | No single metric captures "better design" |
+| **Code readability / maintainability** | Subjective, not measurable by script |
+| **Feature development** | Requires understanding requirements, not just metrics |
+| **Bug fixing** | Needs root-cause analysis, not trial-and-error |
+| **Security hardening** | Vulnerability count is not a reliable optimization target |
+
+**Rule of thumb**: if you can't write a `bash` command that outputs a number representing "how good is this code," AutoCode is not the right tool. Use human+AI collaboration (e.g., code review) instead.
+
 ## Use Cases (Templates)
 
 | Template | Metric | Direction | Example |
